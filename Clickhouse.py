@@ -142,17 +142,25 @@ class DataLoaderThread(QThread):
 
             for index, row in enumerate(result):
                 # Extract location and timestamp
-                location_index = self.column_names.index(self.location_column)
                 timestamp_index = self.column_names.index(self.timestamp_column) if self.timestamp_column else None
-
-                location = row[location_index]
                 timestamp = row[timestamp_index] if timestamp_index is not None else None
 
-                if not isinstance(location, tuple) or len(location) != 2:
-                    QMessageBox.warning(None, "Data Error", f"Invalid location format: {location}")
-                    continue
+                if isinstance(self.location_column, tuple):
+                    lat_column, lon_column = self.location_column
+                    y = row[self.column_names.index(lat_column)]
+                    x = row[self.column_names.index(lon_column)]
 
-                y, x = location
+                    if y is None or x is None:
+                        continue
+                else:
+                    location_index = self.column_names.index(self.location_column)
+                    location = row[location_index]
+
+                    if not isinstance(location, tuple) or len(location) != 2:
+                        QMessageBox.warning(None, "Data Error", f"Invalid location format: {location}")
+                        continue
+
+                    y, x = location
 
                 # Skip points where latitude and longitude are both 0
                 if x == 0 and y == 0:
@@ -220,13 +228,29 @@ class ClickhouseDialog(QDialog):
         # Disable querybox initially
         self.ui.querybox.setEnabled(False)
 
+        # Only show the controls for the currently selected location mode
+        self.update_location_mode()
+
     def setup_connections(self):
         self.ui.Connectbutton.clicked.connect(self.connect_to_clickhouse)
         self.ui.databasebox.currentIndexChanged.connect(self.update_tables)
         self.ui.tablebox.currentIndexChanged.connect(self.update_columns)
         self.ui.displaybutton.clicked.connect(self.display_data)
         self.ui.clearbutton.clicked.connect(self.clear_filter)
+        self.ui.pointmoderadio.toggled.connect(self.update_location_mode)
         self.ui.locationbox.currentIndexChanged.connect(self.enable_querybox)
+        self.ui.latitudebox.currentIndexChanged.connect(self.enable_querybox)
+        self.ui.longitudebox.currentIndexChanged.connect(self.enable_querybox)
+
+    def update_location_mode(self):
+        is_point_mode = self.ui.pointmoderadio.isChecked()
+        self.ui.locationlabel.setVisible(is_point_mode)
+        self.ui.locationbox.setVisible(is_point_mode)
+        self.ui.latitudelabel.setVisible(not is_point_mode)
+        self.ui.latitudebox.setVisible(not is_point_mode)
+        self.ui.longitudelabel.setVisible(not is_point_mode)
+        self.ui.longitudebox.setVisible(not is_point_mode)
+        self.enable_querybox()
 
     def connect_to_clickhouse(self):
         host = self.ui.hostbox.text()
@@ -276,31 +300,62 @@ class ClickhouseDialog(QDialog):
         try:
             # Fetch and populate columns
             columns = self.client.query(f'DESCRIBE TABLE {database}.{table}').result_rows
+
+            def base_type(column_type):
+                if column_type.startswith('Nullable(') and column_type.endswith(')'):
+                    return column_type[len('Nullable('):-1]
+                return column_type
+
             self.ui.locationbox.clear()
+            self.ui.latitudebox.clear()
+            self.ui.longitudebox.clear()
             self.ui.timestampbox.clear()
-            location_columns = [column[0] for column in columns if column[1] == 'Point']
-            timestamp_columns = [column[0] for column in columns if column[1] == 'DateTime']
-            self.ui.locationbox.addItems(location_columns)
+
+            point_columns = [name for name, column_type, *_ in columns if base_type(column_type) == 'Point']
+            numeric_columns = [name for name, column_type, *_ in columns if base_type(column_type) in ('Float32', 'Float64')]
+            timestamp_columns = [name for name, column_type, *_ in columns if base_type(column_type) == 'DateTime']
+
+            self.ui.locationbox.addItems(point_columns)
+            self.ui.latitudebox.addItems(numeric_columns)
+            self.ui.longitudebox.addItems(numeric_columns)
             self.ui.timestampbox.addItems(timestamp_columns)
+
+            # Default to whichever mode this table actually has data for
+            if not point_columns and numeric_columns:
+                self.ui.latlonmoderadio.setChecked(True)
+            else:
+                self.ui.pointmoderadio.setChecked(True)
         except Exception as e:
             QMessageBox.critical(self, "Fetch Error", f"Failed to fetch columns: {e}")
 
     def enable_querybox(self):
-        if self.ui.locationbox.currentText():
-            self.ui.querybox.setEnabled(True)
+        if self.ui.pointmoderadio.isChecked():
+            has_location = bool(self.ui.locationbox.currentText())
         else:
-            self.ui.querybox.setEnabled(False)
+            has_location = bool(self.ui.latitudebox.currentText()) and bool(self.ui.longitudebox.currentText())
+        self.ui.querybox.setEnabled(has_location)
 
     def display_data(self):
         database = self.ui.databasebox.currentText()
         table = self.ui.tablebox.currentText()
-        location_column = self.ui.locationbox.currentText()
         timestamp_column = self.ui.timestampbox.currentText()
         custom_query = self.ui.querybox.toPlainText().strip()
 
-        if not database or not table or not location_column:
-            QMessageBox.warning(self, "Missing Information", "Please select database, table, and location column.")
-            return
+        if self.ui.pointmoderadio.isChecked():
+            location_column = self.ui.locationbox.currentText()
+            if not database or not table or not location_column:
+                QMessageBox.warning(self, "Missing Information", "Please select database, table, and location column.")
+                return
+        else:
+            lat_column = self.ui.latitudebox.currentText()
+            lon_column = self.ui.longitudebox.currentText()
+            if not database or not table or not lat_column or not lon_column:
+                QMessageBox.warning(self, "Missing Information", "Please select database, table, and latitude/longitude columns.")
+                return
+            if lat_column == lon_column:
+                QMessageBox.warning(self, "Missing Information", "Latitude and longitude columns must be different.")
+                return
+            location_column = (lat_column, lon_column)
 
         try:
             if custom_query:
@@ -329,8 +384,12 @@ class ClickhouseDialog(QDialog):
             columns = self.client.query(f'DESCRIBE TABLE {database}.{table}').result_rows
             column_names = [col[0] for col in columns]
 
-            if location_column not in column_names:
-                QMessageBox.critical(self, "Column Error", "Selected location column is not present in the data.")
+            if isinstance(location_column, tuple):
+                missing = [col for col in location_column if col not in column_names]
+            else:
+                missing = [location_column] if location_column not in column_names else []
+            if missing:
+                QMessageBox.critical(self, "Column Error", f"Selected location column(s) not present in the data: {', '.join(missing)}")
                 return
 
             # Create and start the data loader thread
