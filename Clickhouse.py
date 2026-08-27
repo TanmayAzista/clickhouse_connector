@@ -118,6 +118,7 @@ class Clickhouse:
 class DataLoaderThread(QThread):
     data_loaded = pyqtSignal(str)
     progress_updated = pyqtSignal(int)
+    message = pyqtSignal(str, str, str)  # level ('critical'/'warning'/'information'), title, text
 
     def __init__(self, client, query, database, table, location_column, timestamp_column, column_names):
         super().__init__()
@@ -134,7 +135,7 @@ class DataLoaderThread(QThread):
             result = self.client.query(self.query).result_rows
 
             if not result:
-                QMessageBox.information(None, "No Data", "No data available for the selected criteria.")
+                self.message.emit('information', "No Data", "No data available for the selected criteria.")
                 return
 
             features = []
@@ -157,7 +158,7 @@ class DataLoaderThread(QThread):
                     location = row[location_index]
 
                     if not isinstance(location, tuple) or len(location) != 2:
-                        QMessageBox.warning(None, "Data Error", f"Invalid location format: {location}")
+                        self.message.emit('warning', "Data Error", f"Invalid location format: {location}")
                         continue
 
                     y, x = location
@@ -166,7 +167,7 @@ class DataLoaderThread(QThread):
                 if x == 0 and y == 0:
                     continue
                 if x < -180 or x > 180 or y < -90 or y > 90:
-                    QMessageBox.warning(None, "Data Error", f"Coordinate out of bounds: ({y}, {x})")
+                    self.message.emit('warning', "Data Error", f"Coordinate out of bounds: ({y}, {x})")
                     continue
 
                 # Convert datetime objects to string
@@ -190,7 +191,7 @@ class DataLoaderThread(QThread):
                 self.progress_updated.emit((index + 1) * 100 // total_rows)
 
             if not features:
-                QMessageBox.information(None, "No Valid Data", "No valid data to display.")
+                self.message.emit('information', "No Valid Data", "No valid data to display.")
                 return
 
             # Create GeoJSON file
@@ -206,7 +207,7 @@ class DataLoaderThread(QThread):
 
             self.data_loaded.emit(temp_file_path)
         except Exception as e:
-            QMessageBox.critical(None, "Query Error", f"Failed to display data: {e}")
+            self.message.emit('critical', "Query Error", f"Failed to display data: {e}")
 
 class ClickhouseDialog(QDialog):
     def __init__(self, iface):
@@ -396,6 +397,7 @@ class ClickhouseDialog(QDialog):
             self.data_loader_thread = DataLoaderThread(self.client, query, database, table, location_column, timestamp_column, column_names)
             self.data_loader_thread.data_loaded.connect(self.load_layer)
             self.data_loader_thread.progress_updated.connect(self.update_progress)
+            self.data_loader_thread.message.connect(self.show_thread_message)
             self.data_loader_thread.start()
 
             # Show the progress bar
@@ -408,6 +410,22 @@ class ClickhouseDialog(QDialog):
 
     def update_progress(self, value):
         self.ui.progressbar.setValue(value)
+
+    def show_thread_message(self, level, title, text):
+        # DataLoaderThread runs on a background QThread; QMessageBox must only
+        # ever be constructed on the GUI thread, so it emits here instead of
+        # showing the dialog itself.
+        if level == 'critical':
+            QMessageBox.critical(self, title, text)
+        elif level == 'warning':
+            QMessageBox.warning(self, title, text)
+        else:
+            QMessageBox.information(self, title, text)
+
+        if level in ('critical', 'information'):
+            # These correspond to the thread returning early with no
+            # data_loaded signal to follow, so nothing else will hide it.
+            self.ui.progressbar.hide()
 
     def load_layer(self, temp_file_path):
         try:
