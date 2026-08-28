@@ -1,23 +1,29 @@
 # clickhouse-connector
 
-It connects Clickhouse with QGIS, enabling seamless integration and visualization of spatial data. It retrieves records from ClickHouse that contain point information and displays them as layers in QGIS. This plugin allows users to easily manage and visualize large geospatial datasets stored in Clickhouse directly within the QGIS environment.
+It connects Clickhouse with QGIS, enabling seamless integration and visualization of spatial data. It retrieves records from ClickHouse — either a native `Point` column or separate latitude/longitude columns — and displays them as a live, continuously-refreshing layer in QGIS as you pan and zoom. This plugin allows users to easily manage and visualize large geospatial datasets stored in Clickhouse directly within the QGIS environment.
 
 # Clickhouse Plugin for QGIS
 
-Query and Visualize [Clickhouse](https://clickhouse.com/) Point data in QGIS.
+Query and Visualize [Clickhouse](https://clickhouse.com/) geospatial data in QGIS.
 
 **Requirements**
 
 ************
-QGIS 3.10 (minimum)
+QGIS 3.34 LTR (tested; earlier 3.x versions not verified)
+- Tested successfully in 3.44.13
 
 **Important Note**
 
 ---
  - The code uses "—break-system-packages" to install the dependencies (try it at your own risk).
- - By default:
-   - If timestamp field is there in clickhouse table then last 8 hours data will be displayed (without any query), to query data beyond that use query tool to write your own queries.
-   - If timestamp field is not present then 10000 rows of data will be displayed (without any query), to query data beyond that use query tool to write your own queries.
+ - **Location Data Type**: choose how your table stores position data before clicking Display AIS —
+   - **Single Point Column**: a native ClickHouse `Point` column.
+   - **Separate Lat/Lon Columns**: two separate numeric (`Float32`/`Float64`) columns; pick which is latitude and which is longitude.
+ - **Viewport-driven rendering**: Display AIS doesn't load the whole result set at once. It splits the current map view into a grid and fetches up to a capped number of points per grid cell, so the total number of rendered points stays bounded no matter how large the table is. As you pan or zoom, the grid and query automatically refresh to match the new view. Grid rows, columns, and points-per-cell are adjustable from the **Grid Settings** row (defaults: 10 rows, 10 columns, 100 points per cell). Recommended to use <200k capped points overall. 
+ - By default, before the per-cell cap is applied:
+   - If a timestamp field is selected, only the last 8 hours of data is queried — use the Basic Query Tool to write your own filter for a different time range (it still composes with the viewport grid/cap).
+   - If no timestamp field is selected, the whole table is queried — the per-cell cap is what keeps this fast regardless of table size.
+   - A very zoomed-out view (e.g. the whole world) still has to check every candidate row against the current viewport, so it can be noticeably slower than a zoomed-in view. May be able to resolve with a spatial index in the DB.
 ## Install
 
 #### Install from ZIP file
