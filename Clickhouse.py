@@ -1,6 +1,5 @@
 import sys
 import os
-from datetime import datetime, timedelta
 from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction, QDialog, QMessageBox, QLineEdit
@@ -247,22 +246,22 @@ class ClickhouseDialog(QDialog):
             self.ui.locationbox.clear()
             self.ui.latitudebox.clear()
             self.ui.longitudebox.clear()
-            self.ui.timestampbox.clear()
 
             point_columns = [name for name, column_type, *_ in columns if _base_type(column_type) == 'Point']
             numeric_columns = [name for name, column_type, *_ in columns if _base_type(column_type) in ('Float32', 'Float64')]
-            timestamp_columns = [name for name, column_type, *_ in columns if _base_type(column_type) == 'DateTime']
 
             self.ui.locationbox.addItems(point_columns)
             self.ui.latitudebox.addItems(numeric_columns)
             self.ui.longitudebox.addItems(numeric_columns)
-            self.ui.timestampbox.addItems(timestamp_columns)
 
             # Default to whichever mode this table actually has data for
             if not point_columns and numeric_columns:
                 self.ui.latlonmoderadio.setChecked(True)
             else:
                 self.ui.pointmoderadio.setChecked(True)
+
+            # Show the query that will actually be sent if the box is left empty.
+            self.ui.querybox.setPlaceholderText(f"SELECT * FROM {database}.{table}")
         except Exception as e:
             QMessageBox.critical(self, "Fetch Error", f"Failed to fetch columns: {e}")
 
@@ -276,7 +275,6 @@ class ClickhouseDialog(QDialog):
     def display_data(self):
         database = self.ui.databasebox.currentText()
         table = self.ui.tablebox.currentText()
-        timestamp_column = self.ui.timestampbox.currentText()
         custom_query = self.ui.querybox.toPlainText().strip()
 
         if self.ui.pointmoderadio.isChecked():
@@ -298,19 +296,9 @@ class ClickhouseDialog(QDialog):
         try:
             if custom_query:
                 base_query = self.append_all_columns(custom_query)
-            elif timestamp_column:
-                # Default to the last 8 hours when a timestamp column is available
-                # and no custom filter was given.
-                now = datetime.now()
-                past_8_hours = now - timedelta(hours=8)
-                base_query = f"""
-                SELECT *
-                FROM {database}.{table}
-                WHERE {timestamp_column} >= '{past_8_hours.strftime('%Y-%m-%d %H:%M:%S')}'
-                """
             else:
-                # No more hardcoded LIMIT here -- the viewport's per-cell cap now
-                # bounds how much comes back, regardless of table size.
+                # No hardcoded LIMIT or time window here -- the viewport's per-cell
+                # cap bounds how much comes back, regardless of table size.
                 base_query = f"SELECT * FROM {database}.{table}"
 
             # Extract column names + Nullable-stripped types (needed for both the

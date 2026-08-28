@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>393</width>
-    <height>907</height>
+    <height>847</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -17,7 +17,7 @@
    <property name="geometry">
     <rect>
      <x>300</x>
-     <y>866</y>
+     <y>806</y>
      <width>88</width>
      <height>27</height>
     </rect>
@@ -288,34 +288,11 @@
     </rect>
    </property>
   </widget>
-  <widget class="QComboBox" name="timestampbox">
-   <property name="geometry">
-    <rect>
-     <x>10</x>
-     <y>600</y>
-     <width>381</width>
-     <height>27</height>
-    </rect>
-   </property>
-  </widget>
-  <widget class="QLabel" name="timestamplabel">
-   <property name="geometry">
-    <rect>
-     <x>10</x>
-     <y>580</y>
-     <width>291</width>
-     <height>19</height>
-    </rect>
-   </property>
-   <property name="text">
-    <string>Select Parameter with time information</string>
-   </property>
-  </widget>
   <widget class="QTextEdit" name="querybox">
    <property name="geometry">
     <rect>
      <x>10</x>
-     <y>660</y>
+     <y>600</y>
      <width>381</width>
      <height>131</height>
     </rect>
@@ -325,7 +302,7 @@
    <property name="geometry">
     <rect>
      <x>10</x>
-     <y>640</y>
+     <y>580</y>
      <width>121</width>
      <height>19</height>
     </rect>
@@ -338,7 +315,7 @@
    <property name="geometry">
     <rect>
      <x>10</x>
-     <y>800</y>
+     <y>740</y>
      <width>291</width>
      <height>19</height>
     </rect>
@@ -351,7 +328,7 @@
    <property name="geometry">
     <rect>
      <x>10</x>
-     <y>825</y>
+     <y>765</y>
      <width>123</width>
      <height>27</height>
     </rect>
@@ -370,7 +347,7 @@
    <property name="geometry">
     <rect>
      <x>139</x>
-     <y>825</y>
+     <y>765</y>
      <width>123</width>
      <height>27</height>
     </rect>
@@ -389,7 +366,7 @@
    <property name="geometry">
     <rect>
      <x>268</x>
-     <y>825</y>
+     <y>765</y>
      <width>123</width>
      <height>27</height>
     </rect>
@@ -408,7 +385,7 @@
    <property name="geometry">
     <rect>
      <x>10</x>
-     <y>866</y>
+     <y>806</y>
      <width>88</width>
      <height>27</height>
     </rect>
@@ -466,8 +443,6 @@
   <zorder>latitudelabel</zorder>
   <zorder>longitudebox</zorder>
   <zorder>longitudelabel</zorder>
-  <zorder>timestampbox</zorder>
-  <zorder>timestamplabel</zorder>
   <zorder>querybox</zorder>
   <zorder>querylabel</zorder>
   <zorder>gridsettingslabel</zorder>
@@ -492,7 +467,6 @@
   <tabstop>locationbox</tabstop>
   <tabstop>latitudebox</tabstop>
   <tabstop>longitudebox</tabstop>
-  <tabstop>timestampbox</tabstop>
   <tabstop>querybox</tabstop>
   <tabstop>gridrowsbox</tabstop>
   <tabstop>gridcolsbox</tabstop>
