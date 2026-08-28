@@ -1,12 +1,13 @@
 import sys
 import os
 from datetime import datetime, timedelta
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, QVariant, QThread, pyqtSignal
+from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction, QDialog, QMessageBox, QLineEdit
-from qgis.core import QgsFeature, QgsGeometry, QgsPointXY, QgsField, QgsVectorLayer, QgsProject, QgsApplication
+from qgis.core import QgsApplication
 from .Clickhouse_dialog import Ui_ClickhouseDialogBase
-import tempfile
+from .viewport_streamer import ViewportStreamer
+from .viewport_query import GRID_ROWS, GRID_COLS, POINTS_PER_CELL
 import json
 import re
 from . import resources
@@ -115,104 +116,16 @@ class Clickhouse:
             pass
         
 
-class DataLoaderThread(QThread):
-    data_loaded = pyqtSignal(str)
-    progress_updated = pyqtSignal(int)
-    message = pyqtSignal(str, str, str)  # level ('critical'/'warning'/'information'), title, text
+def _base_type(column_type):
+    if column_type.startswith('Nullable(') and column_type.endswith(')'):
+        return column_type[len('Nullable('):-1]
+    return column_type
 
-    def __init__(self, client, query, database, table, location_column, timestamp_column, column_names):
-        super().__init__()
-        self.client = client
-        self.query = query
-        self.database = database
-        self.table = table
-        self.location_column = location_column
-        self.timestamp_column = timestamp_column
-        self.column_names = column_names
-
-    def run(self):
-        try:
-            result = self.client.query(self.query).result_rows
-
-            if not result:
-                self.message.emit('information', "No Data", "No data available for the selected criteria.")
-                return
-
-            features = []
-            total_rows = len(result)
-
-            for index, row in enumerate(result):
-                # Extract location and timestamp
-                timestamp_index = self.column_names.index(self.timestamp_column) if self.timestamp_column else None
-                timestamp = row[timestamp_index] if timestamp_index is not None else None
-
-                if isinstance(self.location_column, tuple):
-                    lat_column, lon_column = self.location_column
-                    y = row[self.column_names.index(lat_column)]
-                    x = row[self.column_names.index(lon_column)]
-
-                    if y is None or x is None:
-                        continue
-                else:
-                    location_index = self.column_names.index(self.location_column)
-                    location = row[location_index]
-
-                    if not isinstance(location, tuple) or len(location) != 2:
-                        self.message.emit('warning', "Data Error", f"Invalid location format: {location}")
-                        continue
-
-                    y, x = location
-
-                # Skip points where latitude and longitude are both 0
-                if x == 0 and y == 0:
-                    continue
-                if x < -180 or x > 180 or y < -90 or y > 90:
-                    self.message.emit('warning', "Data Error", f"Coordinate out of bounds: ({y}, {x})")
-                    continue
-
-                # Convert datetime objects to string
-                row = list(row)
-                for i, value in enumerate(row):
-                    if isinstance(value, datetime):
-                        row[i] = value.strftime('%Y-%m-%d %H:%M:%S')
-
-                # Create GeoJSON feature
-                feature = {
-                    "type": "Feature",
-                    "geometry": {
-                        "type": "Point",
-                        "coordinates": [x, y]
-                    },
-                    "properties": {self.column_names[i]: row[i] for i in range(len(self.column_names))}
-                }
-
-
-                features.append(feature)
-                self.progress_updated.emit((index + 1) * 100 // total_rows)
-
-            if not features:
-                self.message.emit('information', "No Valid Data", "No valid data to display.")
-                return
-
-            # Create GeoJSON file
-            geojson = {
-                "type": "FeatureCollection",
-                "features": features
-            }
-
-            # Write GeoJSON to a temporary file
-            with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.geojson') as temp_file:
-                json.dump(geojson, temp_file)
-                temp_file_path = temp_file.name
-
-            self.data_loaded.emit(temp_file_path)
-        except Exception as e:
-            self.message.emit('critical', "Query Error", f"Failed to display data: {e}")
 
 class ClickhouseDialog(QDialog):
     def __init__(self, iface):
         super().__init__()
-        self.iface = iface 
+        self.iface = iface
         self.ui = Ui_ClickhouseDialogBase()
         self.ui.setupUi(self)
         self.setup_connections()
@@ -232,6 +145,21 @@ class ClickhouseDialog(QDialog):
         # Only show the controls for the currently selected location mode
         self.update_location_mode()
 
+        # Grid-settings defaults -- single source of truth is viewport_query.py's
+        # GRID_ROWS/GRID_COLS/POINTS_PER_CELL; the spin boxes just start there and
+        # the user can change them per-session from here on.
+        self.ui.gridrowsbox.setValue(GRID_ROWS)
+        self.ui.gridcolsbox.setValue(GRID_COLS)
+        self.ui.pointspercellbox.setValue(POINTS_PER_CELL)
+
+        # Viewport-driven, chunked-and-capped rendering controller (see
+        # viewport_streamer.py) -- keeps this dialog thin; all the
+        # generation/staleness/debounce/threading state lives there.
+        self.viewport_streamer = ViewportStreamer(self.iface)
+        self.viewport_streamer.error_occurred.connect(self.show_thread_message)
+        self.viewport_streamer.busy_changed.connect(self._set_busy)
+        self.finished.connect(self._on_dialog_finished)
+
     def setup_connections(self):
         self.ui.Connectbutton.clicked.connect(self.connect_to_clickhouse)
         self.ui.databasebox.currentIndexChanged.connect(self.update_tables)
@@ -242,6 +170,20 @@ class ClickhouseDialog(QDialog):
         self.ui.locationbox.currentIndexChanged.connect(self.enable_querybox)
         self.ui.latitudebox.currentIndexChanged.connect(self.enable_querybox)
         self.ui.longitudebox.currentIndexChanged.connect(self.enable_querybox)
+
+    def _on_dialog_finished(self, result):
+        # ClickhouseDialog is reused across invocations (see Clickhouse.run()'s
+        # first_start pattern) -- closing it only hides it, so without this the
+        # viewport streamer would keep firing background queries after close.
+        self.viewport_streamer.stop()
+
+    def _set_busy(self, busy):
+        if busy:
+            self.ui.progressbar.setRange(0, 0)
+            self.ui.progressbar.show()
+        else:
+            self.ui.progressbar.setRange(0, 100)
+            self.ui.progressbar.hide()
 
     def update_location_mode(self):
         is_point_mode = self.ui.pointmoderadio.isChecked()
@@ -302,19 +244,14 @@ class ClickhouseDialog(QDialog):
             # Fetch and populate columns
             columns = self.client.query(f'DESCRIBE TABLE {database}.{table}').result_rows
 
-            def base_type(column_type):
-                if column_type.startswith('Nullable(') and column_type.endswith(')'):
-                    return column_type[len('Nullable('):-1]
-                return column_type
-
             self.ui.locationbox.clear()
             self.ui.latitudebox.clear()
             self.ui.longitudebox.clear()
             self.ui.timestampbox.clear()
 
-            point_columns = [name for name, column_type, *_ in columns if base_type(column_type) == 'Point']
-            numeric_columns = [name for name, column_type, *_ in columns if base_type(column_type) in ('Float32', 'Float64')]
-            timestamp_columns = [name for name, column_type, *_ in columns if base_type(column_type) == 'DateTime']
+            point_columns = [name for name, column_type, *_ in columns if _base_type(column_type) == 'Point']
+            numeric_columns = [name for name, column_type, *_ in columns if _base_type(column_type) in ('Float32', 'Float64')]
+            timestamp_columns = [name for name, column_type, *_ in columns if _base_type(column_type) == 'DateTime']
 
             self.ui.locationbox.addItems(point_columns)
             self.ui.latitudebox.addItems(numeric_columns)
@@ -360,30 +297,27 @@ class ClickhouseDialog(QDialog):
 
         try:
             if custom_query:
-                query = self.append_all_columns(custom_query)
+                base_query = self.append_all_columns(custom_query)
+            elif timestamp_column:
+                # Default to the last 8 hours when a timestamp column is available
+                # and no custom filter was given.
+                now = datetime.now()
+                past_8_hours = now - timedelta(hours=8)
+                base_query = f"""
+                SELECT *
+                FROM {database}.{table}
+                WHERE {timestamp_column} >= '{past_8_hours.strftime('%Y-%m-%d %H:%M:%S')}'
+                """
             else:
-                if timestamp_column:
-                    # Calculate the timestamp for 8 hours ago
-                    now = datetime.now()
-                    past_8_hours = now - timedelta(hours=8)
+                # No more hardcoded LIMIT here -- the viewport's per-cell cap now
+                # bounds how much comes back, regardless of table size.
+                base_query = f"SELECT * FROM {database}.{table}"
 
-                    # Query to get data points from the last 8 hours
-                    query = f"""
-                    SELECT *
-                    FROM {database}.{table}
-                    WHERE {timestamp_column} >= '{past_8_hours.strftime('%Y-%m-%d %H:%M:%S')}'
-                    """
-                else:
-                    # Query to get initial 10,000 rows
-                    query = f"""
-                    SELECT *
-                    FROM {database}.{table}
-                    LIMIT 10000
-                    """
-
-            # Extract column names
+            # Extract column names + Nullable-stripped types (needed for both the
+            # location-column validation below and the memory layer's field types).
             columns = self.client.query(f'DESCRIBE TABLE {database}.{table}').result_rows
-            column_names = [col[0] for col in columns]
+            column_defs = [(col[0], _base_type(col[1])) for col in columns]
+            column_names = [name for name, _ in column_defs]
 
             if isinstance(location_column, tuple):
                 missing = [col for col in location_column if col not in column_names]
@@ -393,62 +327,25 @@ class ClickhouseDialog(QDialog):
                 QMessageBox.critical(self, "Column Error", f"Selected location column(s) not present in the data: {', '.join(missing)}")
                 return
 
-            # Create and start the data loader thread
-            self.data_loader_thread = DataLoaderThread(self.client, query, database, table, location_column, timestamp_column, column_names)
-            self.data_loader_thread.data_loaded.connect(self.load_layer)
-            self.data_loader_thread.progress_updated.connect(self.update_progress)
-            self.data_loader_thread.message.connect(self.show_thread_message)
-            self.data_loader_thread.start()
-
-            # Show the progress bar
-            self.ui.progressbar.setMaximum(100)
-            self.ui.progressbar.setValue(0)
-            self.ui.progressbar.show()
+            session = {
+                'base_query': base_query,
+                'location_column': location_column,
+                'columns': column_defs,
+                'grid_rows': self.ui.gridrowsbox.value(),
+                'grid_cols': self.ui.gridcolsbox.value(),
+                'points_per_cell': self.ui.pointspercellbox.value(),
+            }
+            self.viewport_streamer.start(self.client, session)
         except Exception as e:
             QMessageBox.critical(self, "Query Error", f"Failed to display data: {e}")
             self.ui.progressbar.hide()
 
-    def update_progress(self, value):
-        self.ui.progressbar.setValue(value)
-
-    def show_thread_message(self, level, title, text):
-        # DataLoaderThread runs on a background QThread; QMessageBox must only
-        # ever be constructed on the GUI thread, so it emits here instead of
-        # showing the dialog itself.
-        if level == 'critical':
-            QMessageBox.critical(self, title, text)
-        elif level == 'warning':
-            QMessageBox.warning(self, title, text)
-        else:
-            QMessageBox.information(self, title, text)
-
-        if level in ('critical', 'information'):
-            # These correspond to the thread returning early with no
-            # data_loaded signal to follow, so nothing else will hide it.
-            self.ui.progressbar.hide()
-
-    def load_layer(self, temp_file_path):
-        try:
-            # Load GeoJSON file into QGIS
-            layer = QgsVectorLayer(temp_file_path, "Clickhouse Data", "ogr")
-            if not layer.isValid():
-                QMessageBox.warning(self, "Layer Error", "Failed to load GeoJSON layer.")
-                self.ui.progressbar.hide()
-                return
-
-            # Add layer to QGIS project
-            QgsProject.instance().addMapLayer(layer)
-
-            # Zoom to extent of the new layer
-            if layer.extent().isEmpty() is False:
-                self.iface.mapCanvas().setExtent(layer.extent())
-                self.iface.mapCanvas().refresh()
-
-            QMessageBox.information(self, "Success", f"Loaded features into the map.")
-        except Exception as e:
-            QMessageBox.critical(self, "Layer Error", f"Failed to load layer: {e}")
-        finally:
-            self.ui.progressbar.hide()
+    def show_thread_message(self, title, text):
+        # ViewportStreamer runs its queries on a background QThread and never
+        # touches QMessageBox itself (constructing a Qt widget off the GUI thread
+        # is undefined behavior and previously crashed this plugin outright) --
+        # it reports errors here via a signal instead.
+        QMessageBox.critical(self, title, text)
 
     def clear_filter(self):
         self.ui.querybox.clear()
