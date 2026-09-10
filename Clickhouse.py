@@ -295,15 +295,19 @@ class ClickhouseDialog(QDialog):
 
         try:
             if custom_query:
-                base_query = self.append_all_columns(custom_query)
+                # Used verbatim -- no more forcing the SELECT list to '*'. Whatever
+                # columns you ask for are what the query returns.
+                base_query = custom_query.strip().rstrip(';')
             else:
                 # No hardcoded LIMIT or time window here -- the viewport's per-cell
                 # cap bounds how much comes back, regardless of table size.
                 base_query = f"SELECT * FROM {database}.{table}"
 
-            # Extract column names + Nullable-stripped types (needed for both the
-            # location-column validation below and the memory layer's field types).
-            columns = self.client.query(f'DESCRIBE TABLE {database}.{table}').result_rows
+            # Introspect the columns this query actually returns (not the whole
+            # table's schema) -- a custom query that only selects a subset of
+            # columns is respected, and dropping a needed lat/lon/point column is
+            # caught by the validation below instead of being silently masked.
+            columns = self.client.query(f'DESCRIBE TABLE ({base_query})').result_rows
             column_defs = [(col[0], _base_type(col[1])) for col in columns]
             column_names = [name for name, _ in column_defs]
 
@@ -358,38 +362,3 @@ class ClickhouseDialog(QDialog):
                 self.ui.usernamebox.setText(credentials['username'])
                 self.ui.passwordbox.setText(credentials['password'])
                 self.ui.savecredentialscheck.setChecked(True)
-
-    def append_all_columns(self, custom_query):
-        def is_join_clause(query, position):
-            """Check if the SELECT clause at position is part of a JOIN clause."""
-            # Find the substring from the start of the query to the SELECT clause
-            sub_query = query[:position]
-            return 'JOIN' in sub_query.upper()
-        
-        # Find all occurrences of SELECT in the query
-        select_indices = [i for i in range(len(custom_query)) if custom_query.upper().startswith('SELECT', i)]
-        
-        # If no SELECT is found, return the original query
-        if not select_indices:
-            return custom_query
-
-        # Start from the end to avoid index shifting issues
-        for select_index in reversed(select_indices):
-            # Check if the SELECT clause is part of a JOIN
-            if is_join_clause(custom_query, select_index):
-                continue
-
-            # Find the next FROM keyword after the current SELECT
-            from_index = custom_query.upper().find('FROM', select_index)
-            if from_index != -1:
-                # Find the end of the SELECT clause
-                select_clause_end = from_index
-                for i in range(select_index, from_index):
-                    if custom_query[i] in ',(':
-                        select_clause_end = i
-                        break
-                
-                # Replace the SELECT clause with SELECT *
-                custom_query = custom_query[:select_index + len('SELECT')] + ' *' + custom_query[select_clause_end:]
-        
-        return custom_query

@@ -20,9 +20,7 @@ QGIS 3.34 LTR (tested; earlier 3.x versions not verified)
    - **Single Point Column**: a native ClickHouse `Point` column.
    - **Separate Lat/Lon Columns**: two separate numeric (`Float32`/`Float64`) columns; pick which is latitude and which is longitude.
  - **Viewport-driven rendering**: Display AIS doesn't load the whole result set at once. It splits the current map view into a grid and fetches up to a capped number of points per grid cell, so the total number of rendered points stays bounded no matter how large the table is. As you pan or zoom, the grid and query automatically refresh to match the new view. Grid rows, columns, and points-per-cell are adjustable from the **Grid Settings** row (defaults: 10 rows, 10 columns, 100 points per cell). Recommended to use <200k capped points overall. 
- - By default, before the per-cell cap is applied:
-   - If a timestamp field is selected, only the last 8 hours of data is queried — use the Basic Query Tool to write your own filter for a different time range (it still composes with the viewport grid/cap).
-   - If no timestamp field is selected, the whole table is queried — the per-cell cap is what keeps this fast regardless of table size.
+ - By default, before the per-cell cap is applied, the query is simply `SELECT * FROM database.table` — shown as placeholder text in the Basic Query Tool box once a table is selected. Type your own query there (e.g. to filter by time range or any other column) to use that instead — it still composes with the viewport grid/cap.
    - A very zoomed-out view (e.g. the whole world) still has to check every candidate row against the current viewport, so it can be noticeably slower than a zoomed-in view. May be able to resolve with a spatial index in the DB.
 ## Install
 
